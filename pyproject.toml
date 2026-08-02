@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "test-equipment-console"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop console for simulated and real test equipment communication"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -13,7 +13,8 @@ authors = [
     { name = "Justin Gottlieb" }
 ]
 dependencies = [
-    "PySide6>=6.8"
+    "PySide6>=6.8",
+    "PyVISA>=1.15"
 ]
 
 [project.optional-dependencies]
