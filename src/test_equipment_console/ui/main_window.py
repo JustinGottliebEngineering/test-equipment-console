@@ -37,6 +37,9 @@ from test_equipment_console.drivers.base import (
     ConnectionState,
     InstrumentError,
 )
+from test_equipment_console.drivers.visa import (
+    VisaInstrument,
+)
 from test_equipment_console.measurements import (
     MeasurementRecord,
 )
@@ -45,6 +48,9 @@ from test_equipment_console.simulators.frequency_counter import (
 )
 from test_equipment_console.simulators.power_supply import (
     SimulatedPowerSupply,
+)
+from test_equipment_console.ui.visa_dialog import (
+    VisaResourceDialog,
 )
 
 
@@ -158,6 +164,13 @@ class MainWindow(QMainWindow):
         )
         self.instrument_combo.currentTextChanged.connect(
             self._on_instrument_selection_changed
+        )
+
+        self.add_visa_button = QPushButton(
+            "Add VISA Instrument"
+        )
+        self.add_visa_button.clicked.connect(
+            self._add_visa_instrument
         )
 
         connection_layout = QHBoxLayout()
@@ -283,6 +296,7 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(section_title)
         layout.addWidget(self.instrument_combo)
+        layout.addWidget(self.add_visa_button)
         layout.addLayout(connection_layout)
         layout.addWidget(status_title)
         layout.addWidget(
@@ -327,6 +341,9 @@ class MainWindow(QMainWindow):
         )
         self.instrument_control_stack.addWidget(
             self._build_power_supply_controls()
+        )
+        self.instrument_control_stack.addWidget(
+            self._build_visa_controls()
         )
 
         self.workspace_tabs = QTabWidget()
@@ -686,6 +703,32 @@ class MainWindow(QMainWindow):
 
         return widget
 
+    def _build_visa_controls(self) -> QWidget:
+        widget = QFrame()
+        widget.setObjectName("controlFrame")
+
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("Generic VISA Instrument")
+        title.setObjectName("fieldLabel")
+
+        description = QLabel(
+            "Use the command console below to send device-specific "
+            "commands and queries to this real VISA resource. Generic "
+            "VISA instruments do not use the simulator-specific controls "
+            "or automatic live measurement monitor."
+        )
+        description.setObjectName("helpLabel")
+        description.setWordWrap(True)
+
+        layout.addWidget(title)
+        layout.addWidget(description)
+        layout.addStretch()
+
+        return widget
+
     def _build_console_panel(self) -> QWidget:
         panel = QWidget()
 
@@ -896,6 +939,52 @@ class MainWindow(QMainWindow):
 
         return panel
 
+    def _add_visa_instrument(self) -> None:
+        dialog = VisaResourceDialog(self)
+
+        if dialog.exec() != VisaResourceDialog.DialogCode.Accepted:
+            return
+
+        display_name = dialog.instrument_name
+        unique_name = display_name
+        suffix = 2
+
+        while unique_name in self._instruments:
+            unique_name = f"{display_name} ({suffix})"
+            suffix += 1
+
+        instrument = VisaInstrument(
+            name=unique_name,
+            resource_name=dialog.resource_name,
+            timeout_ms=dialog.timeout_ms,
+            read_termination=dialog.read_termination,
+            write_termination=dialog.write_termination,
+            backend=dialog.backend,
+        )
+
+        self._instruments[unique_name] = instrument
+
+        self.instrument_combo.blockSignals(True)
+        self.instrument_combo.addItem(unique_name)
+        self.instrument_combo.setCurrentText(unique_name)
+        self.instrument_combo.blockSignals(False)
+
+        self._active_instrument = instrument
+        self._select_control_panel()
+        self._clear_identity()
+        self._clear_measurement_displays()
+        self._reset_instrument_buttons()
+
+        self.resource_value.setText(
+            instrument.resource_name
+        )
+
+        self._update_connection_controls()
+        self._append_system_message(
+            f"Added VISA instrument {unique_name} at "
+            f"{instrument.resource_name}."
+        )
+
     def _load_selected_instrument(self) -> None:
         selected_name = (
             self.instrument_combo.currentText()
@@ -957,43 +1046,81 @@ class MainWindow(QMainWindow):
             self.instrument_control_stack.setCurrentIndex(
                 0
             )
-        else:
+            return
+
+        if isinstance(
+            self._active_instrument,
+            SimulatedPowerSupply,
+        ):
             self.instrument_control_stack.setCurrentIndex(
                 1
             )
+            return
+
+        self.instrument_control_stack.setCurrentIndex(
+            2
+        )
 
     def _connect_instrument(self) -> None:
         instrument = self._require_active_instrument()
 
         try:
             instrument.connect()
-            identity = instrument.identify()
         except InstrumentError as exc:
             self._append_error(str(exc))
             self._update_connection_controls()
             return
 
-        self.manufacturer_value.setText(
-            identity.manufacturer
-        )
-        self.model_value.setText(identity.model)
-        self.serial_value.setText(
-            identity.serial_number
-        )
-        self.firmware_value.setText(
-            identity.firmware_version
-        )
+        identity = None
+
+        try:
+            identity = instrument.identify()
+        except InstrumentError as exc:
+            if isinstance(instrument, VisaInstrument):
+                self._append_error(
+                    "Connected, but the identity query failed: "
+                    f"{exc}"
+                )
+            else:
+                try:
+                    instrument.disconnect()
+                except InstrumentError:
+                    pass
+
+                self._append_error(str(exc))
+                self._update_connection_controls()
+                return
+
+        if identity is not None:
+            self.manufacturer_value.setText(
+                identity.manufacturer
+            )
+            self.model_value.setText(identity.model)
+            self.serial_value.setText(
+                identity.serial_number
+            )
+            self.firmware_value.setText(
+                identity.firmware_version
+            )
+            connected_name = identity.display_name
+        else:
+            self.manufacturer_value.setText("Unknown")
+            self.model_value.setText("Unknown")
+            self.serial_value.setText("Unknown")
+            self.firmware_value.setText("Unknown")
+            connected_name = instrument.name
+
         self.resource_value.setText(
             instrument.resource_name
         )
 
         self._append_system_message(
-            f"Connected to {identity.display_name} "
+            f"Connected to {connected_name} "
             f"at {instrument.resource_name}."
         )
 
         self.statusBar().showMessage(
-            f"Connected to {identity.display_name}"
+            f"Connected to {connected_name}"
         )
 
         self._reset_instrument_buttons()
@@ -1577,8 +1704,8 @@ class MainWindow(QMainWindow):
         self.instrument_combo.setEnabled(
             not is_connected
         )
-        self.live_monitor_button.setEnabled(
-            is_connected
+        self.add_visa_button.setEnabled(
+            not is_connected
         )
 
         is_counter = isinstance(
@@ -1588,6 +1715,10 @@ class MainWindow(QMainWindow):
         is_supply = isinstance(
             instrument,
             SimulatedPowerSupply,
+        )
+
+        self.live_monitor_button.setEnabled(
+            is_connected and (is_counter or is_supply)
         )
 
         self.counter_target_spin.setEnabled(
